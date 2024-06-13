@@ -226,7 +226,7 @@ pub unsafe extern "C" fn epoll_pwait2(
 
 fn is_socket(handle: HANDLE) -> bool {
     let res = unsafe { WSAGetQOSByName(handle as _, null(), null_mut()) };
-    res == 0 || (unsafe { WSAGetLastError() } != WSAENOTSOCK)
+    res == 0 && (unsafe { WSAGetLastError() } != WSAENOTSOCK)
 }
 
 fn interest_mode(event: *const Event) -> Result<(Event, PollMode)> {
@@ -300,4 +300,32 @@ pub unsafe extern "C" fn epoll_ctl(
             0
         },
     )
+}
+
+#[cfg(all(test, feature = "std"))]
+mod test {
+    use std::{
+        fs::File,
+        os::windows::io::{AsRawHandle, AsRawSocket, FromRawHandle, OwnedHandle},
+        ptr::null,
+    };
+
+    use socket2::{Domain, Protocol, Socket, Type};
+    use windows_sys::Win32::System::Threading::CreateEventA;
+
+    use super::is_socket;
+
+    #[test]
+    fn handles() {
+        let s = Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::TCP)).unwrap();
+        assert!(is_socket(s.as_raw_socket() as _));
+
+        let f = File::open("Cargo.toml").unwrap();
+        assert!(!is_socket(f.as_raw_handle() as _));
+
+        let e = unsafe { CreateEventA(null(), 0, 0, null()) };
+        assert_ne!(e, 0);
+        let e = unsafe { OwnedHandle::from_raw_handle(e as _) };
+        assert!(!is_socket(e.as_raw_handle() as _));
+    }
 }

@@ -20,6 +20,7 @@ windows-sys = { version = "0.52.0", features = [
 
 [dev-dependencies]
 socket2 = "0.5.7"
+windows-sys = { version = "0.52.0", features = ["Win32_Security"] }
 
 [features]
 default = []
