@@ -1,0 +1,22 @@
+[package]
+name = "wepoll2"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["rlib", "cdylib", "staticlib"]
+
+[dependencies]
+libc = "0.2.155"
+smallvec = "1.13.2"
+windows-sys = { version = "0.52.0", features = [
+    "Wdk_Foundation",
+    "Win32_Foundation",
+    "Win32_Networking_WinSock",
+    "Win32_System_Threading",
+    "Win32_System_IO",
+] }
+
+[profile.release]
+lto = true
+codegen-units = 1
