@@ -1,57 +1,53 @@
 //! FFI of this crate. Imitate epoll(2).
 
-use std::{
+use alloc::boxed::Box;
+use core::{
     ffi::c_int,
-    io,
     mem::MaybeUninit,
-    os::windows::io::{RawHandle, RawSocket},
-    panic::{catch_unwind, UnwindSafe},
     ptr::{null, null_mut},
     time::Duration,
 };
 
 use smallvec::SmallVec;
 use windows_sys::Win32::{
-    Foundation::{SetLastError, ERROR_INVALID_PARAMETER, ERROR_UNKNOWN_EXCEPTION, HANDLE},
-    Networking::WinSock::{WSAGetLastError, WSAGetQOSByName, WSAENOTSOCK},
+    Foundation::{SetLastError, ERROR_INVALID_PARAMETER, ERROR_NOT_ENOUGH_MEMORY, HANDLE},
+    Networking::WinSock::{WSAGetLastError, WSAGetQOSByName, SOCKET, WSAENOTSOCK},
     System::IO::OVERLAPPED_ENTRY,
 };
 
-use crate::{Event, PollMode, Poller};
+use crate::{Error, Event, PollMode, Poller, Result};
 
 #[inline]
-fn catch_unwind_result<F, R>(f: F) -> io::Result<R>
-where
-    F: FnOnce() -> io::Result<R> + UnwindSafe,
-{
-    match catch_unwind(f) {
-        Ok(res) => res,
-        Err(_) => Err(io::Error::from_raw_os_error(ERROR_UNKNOWN_EXCEPTION as _)),
-    }
-}
-
-#[inline]
-fn io_result_ok<T>(res: io::Result<T>) -> Option<T> {
+fn io_result_ok<T>(res: Result<T>) -> Option<T> {
     match res {
         Ok(value) => Some(value),
         Err(e) => {
-            unsafe { SetLastError(e.raw_os_error().unwrap_or(ERROR_UNKNOWN_EXCEPTION as _) as _) };
+            unsafe { SetLastError(e.0) };
             None
         }
     }
 }
 
 #[inline]
-fn io_result_ret(res: io::Result<c_int>) -> c_int {
+fn io_result_ret(res: Result<c_int>) -> c_int {
     io_result_ok(res).unwrap_or(-1)
 }
 
 #[inline]
-fn check_pointer<'a, T>(ptr: *const T) -> io::Result<&'a T> {
+fn check_pointer<'a, T>(ptr: *const T) -> Result<&'a T> {
     if ptr.is_aligned() && !ptr.is_null() {
         Ok(unsafe { &*ptr })
     } else {
-        Err(io::Error::from_raw_os_error(ERROR_INVALID_PARAMETER as _))
+        Err(Error(ERROR_INVALID_PARAMETER))
+    }
+}
+
+#[inline]
+fn check_pointer_mut<'a, T>(ptr: *mut T) -> Result<&'a mut T> {
+    if ptr.is_aligned() && !ptr.is_null() {
+        Ok(unsafe { &mut *ptr })
+    } else {
+        Err(Error(ERROR_INVALID_PARAMETER))
     }
 }
 
@@ -76,46 +72,46 @@ pub const EPOLL_CTL_MOD: c_int = 2;
 pub const EPOLL_CTL_DEL: c_int = 3;
 
 #[inline(never)]
-fn epoll_try_create() -> io::Result<Box<Poller>> {
-    Ok(Box::new(Poller::new()?))
+fn epoll_try_create() -> Result<Box<Poller>> {
+    Box::try_new(Poller::new()?).map_err(|_| Error(ERROR_NOT_ENOUGH_MEMORY))
 }
 
 /// Create a new wepoll instance. `size` should be positive.
 #[no_mangle]
 #[deprecated]
 pub extern "C" fn epoll_create(size: c_int) -> Option<Box<Poller>> {
-    io_result_ok(catch_unwind_result(|| {
+    io_result_ok({
         if size <= 0 {
-            Err(io::Error::from_raw_os_error(ERROR_INVALID_PARAMETER as _))
+            Err(Error(ERROR_INVALID_PARAMETER))
         } else {
             epoll_try_create()
         }
-    }))
+    })
 }
 
 /// Create a new wepoll instance. `flags` should be zero.
 #[no_mangle]
 pub extern "C" fn epoll_create1(flags: c_int) -> Option<Box<Poller>> {
-    io_result_ok(catch_unwind_result(|| {
+    io_result_ok({
         if flags != 0 {
-            Err(io::Error::from_raw_os_error(ERROR_INVALID_PARAMETER as _))
+            Err(Error(ERROR_INVALID_PARAMETER))
         } else {
             epoll_try_create()
         }
-    }))
+    })
 }
 
 /// Close a wepoll instance.
 #[no_mangle]
 pub extern "C" fn epoll_close(poller: Option<Box<Poller>>) -> c_int {
-    io_result_ret(catch_unwind_result(|| {
+    io_result_ret({
         if let Some(poller) = poller {
             drop(poller);
             Ok(0)
         } else {
-            Err(io::Error::from_raw_os_error(ERROR_INVALID_PARAMETER as _))
+            Err(Error(ERROR_INVALID_PARAMETER))
         }
-    }))
+    })
 }
 
 #[inline(never)]
@@ -126,27 +122,29 @@ unsafe fn epoll_wait_duration(
     timeout: Option<Duration>,
     alertable: bool,
 ) -> c_int {
-    io_result_ret(catch_unwind_result(|| {
-        let poller = check_pointer(poller)?;
-        if len != 0 {
-            check_pointer(events)?;
-        }
-        let events: &mut [MaybeUninit<Event>] =
-            unsafe { std::slice::from_raw_parts_mut(events.cast(), len as _) };
+    io_result_ret(
+        try {
+            let poller = check_pointer(poller)?;
+            if len != 0 {
+                check_pointer(events)?;
+            }
+            let events: &mut [MaybeUninit<Event>] =
+                unsafe { core::slice::from_raw_parts_mut(events.cast(), len as _) };
 
-        let mut entries = SmallVec::<[OVERLAPPED_ENTRY; 256]>::with_capacity(events.len());
-        let spare_entries = unsafe {
-            std::slice::from_raw_parts_mut(entries.as_mut_ptr().cast(), entries.capacity())
-        };
-        let len = poller.wait(spare_entries, timeout, alertable)?;
-        unsafe { entries.set_len(len) };
+            let mut entries = SmallVec::<[OVERLAPPED_ENTRY; 256]>::with_capacity(events.len());
+            let spare_entries = unsafe {
+                core::slice::from_raw_parts_mut(entries.as_mut_ptr().cast(), entries.capacity())
+            };
+            let len = poller.wait(spare_entries, timeout, alertable)?;
+            unsafe { entries.set_len(len) };
 
-        for (ev, entry) in events.iter_mut().zip(entries) {
-            ev.write(Event::from(entry));
-        }
+            for (ev, entry) in events.iter_mut().zip(entries) {
+                ev.write(Event::from(entry));
+            }
 
-        Ok(len as _)
-    }))
+            len as _
+        },
+    )
 }
 
 /// Wait for events on the wepoll instance.
@@ -222,7 +220,7 @@ fn is_socket(handle: HANDLE) -> bool {
     res == 0 || (unsafe { WSAGetLastError() } != WSAENOTSOCK)
 }
 
-fn interest_mode(event: *const Event) -> io::Result<(Event, PollMode)> {
+fn interest_mode(event: *const Event) -> Result<(Event, PollMode)> {
     let event = check_pointer(event)?;
     let events = event.events as c_int;
     let mode = match (((events & EPOLLET) != 0), ((events & EPOLLONESHOT) != 0)) {
@@ -235,11 +233,11 @@ fn interest_mode(event: *const Event) -> io::Result<(Event, PollMode)> {
 }
 
 fn epoll_ctl_socket(
-    poller: &Poller,
+    poller: &mut Poller,
     op: c_int,
-    socket: RawSocket,
+    socket: SOCKET,
     event: *const Event,
-) -> io::Result<()> {
+) -> Result<()> {
     match op {
         EPOLL_CTL_ADD => {
             let (interest, mode) = interest_mode(event)?;
@@ -250,22 +248,22 @@ fn epoll_ctl_socket(
             poller.modify(socket, interest, mode)?
         }
         EPOLL_CTL_DEL => poller.delete(socket)?,
-        _ => return Err(io::Error::from_raw_os_error(ERROR_INVALID_PARAMETER as _)),
+        _ => return Err(Error(ERROR_INVALID_PARAMETER)),
     }
     Ok(())
 }
 
 fn epoll_ctl_waitable(
-    poller: &Poller,
+    poller: &mut Poller,
     op: c_int,
-    handle: RawHandle,
+    handle: HANDLE,
     event: *const Event,
-) -> io::Result<()> {
+) -> Result<()> {
     match op {
         EPOLL_CTL_ADD => poller.add_waitable(handle, *check_pointer(event)?)?,
         EPOLL_CTL_MOD => poller.modify_waitable(handle, *check_pointer(event)?)?,
         EPOLL_CTL_DEL => poller.delete_waitable(handle)?,
-        _ => return Err(io::Error::from_raw_os_error(ERROR_INVALID_PARAMETER as _)),
+        _ => return Err(Error(ERROR_INVALID_PARAMETER)),
     }
     Ok(())
 }
@@ -277,18 +275,20 @@ fn epoll_ctl_waitable(
 /// Given pointer should be valid.
 #[no_mangle]
 pub unsafe extern "C" fn epoll_ctl(
-    poller: *const Poller,
+    poller: *mut Poller,
     op: c_int,
     handle: HANDLE,
     event: *mut Event,
 ) -> c_int {
-    io_result_ret(catch_unwind_result(|| {
-        let poller = check_pointer(poller)?;
-        if is_socket(handle) {
-            epoll_ctl_socket(poller, op, handle as _, event)?;
-        } else {
-            epoll_ctl_waitable(poller, op, handle as _, event)?;
-        }
-        Ok(0)
-    }))
+    io_result_ret(
+        try {
+            let poller = check_pointer_mut(poller)?;
+            if is_socket(handle) {
+                epoll_ctl_socket(poller, op, handle as _, event)?;
+            } else {
+                epoll_ctl_waitable(poller, op, handle, event)?;
+            }
+            0
+        },
+    )
 }

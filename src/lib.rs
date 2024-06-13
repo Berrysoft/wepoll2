@@ -15,28 +15,29 @@
 //! of thread pool APIs like `RegisterWaitForSingleObject`. We use it to avoid
 //! starting thread pools. It only supports `Oneshot` mode.
 
+#![feature(allocator_api, try_blocks)]
 #![warn(missing_docs)]
+#![no_std]
+
+extern crate alloc;
 
 pub mod ffi;
+mod io;
 mod wait;
 
-use std::{
-    collections::BTreeMap,
-    io,
-    mem::MaybeUninit,
-    os::windows::io::{
-        AsHandle, AsRawHandle, BorrowedHandle, FromRawHandle, OwnedHandle, RawHandle, RawSocket,
-    },
-    ptr::null_mut,
-    sync::{Mutex, RwLock},
-    time::Duration,
-};
+use alloc::collections::BTreeMap;
+use core::{mem::MaybeUninit, ptr::null_mut, time::Duration};
 
+use io::OwnedHandle;
+pub use io::{Error, Result};
 use wait::WaitCompletionPacket;
 use windows_sys::Win32::{
-    Foundation::{ERROR_SUCCESS, INVALID_HANDLE_VALUE, WAIT_IO_COMPLETION, WAIT_TIMEOUT},
+    Foundation::{
+        ERROR_ALREADY_EXISTS, ERROR_NOT_FOUND, ERROR_SUCCESS, HANDLE, INVALID_HANDLE_VALUE,
+        WAIT_IO_COMPLETION, WAIT_TIMEOUT,
+    },
     Networking::WinSock::{
-        ProcessSocketNotifications, SOCK_NOTIFY_EVENT_ERR, SOCK_NOTIFY_EVENT_HANGUP,
+        ProcessSocketNotifications, SOCKET, SOCK_NOTIFY_EVENT_ERR, SOCK_NOTIFY_EVENT_HANGUP,
         SOCK_NOTIFY_EVENT_IN, SOCK_NOTIFY_EVENT_OUT, SOCK_NOTIFY_EVENT_REMOVE,
         SOCK_NOTIFY_OP_DISABLE, SOCK_NOTIFY_OP_ENABLE, SOCK_NOTIFY_OP_REMOVE,
         SOCK_NOTIFY_REGISTER_EVENT_HANGUP, SOCK_NOTIFY_REGISTER_EVENT_IN,
@@ -52,11 +53,6 @@ use windows_sys::Win32::{
         },
     },
 };
-
-/// Macro to lock and ignore lock poisoning.
-macro_rules! lock {
-    ($lock_result:expr) => {{ $lock_result.unwrap_or_else(|e| e.into_inner()) }};
-}
 
 /// The mode in which the poller waits for I/O events.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -106,10 +102,10 @@ pub struct Poller {
     /// The state of the sources registered with this poller.
     ///
     /// Each source is keyed by its raw socket ID.
-    sources: RwLock<BTreeMap<RawSocket, usize>>,
+    sources: BTreeMap<SOCKET, usize>,
 
     /// The state of the waitable handles registered with this poller.
-    waitables: Mutex<BTreeMap<RawHandle, WaitableAttr>>,
+    waitables: BTreeMap<HANDLE, WaitableAttr>,
 }
 
 /// A waitable object with key and [`WaitCompletionPacket`].
@@ -123,38 +119,34 @@ struct WaitableAttr {
 
 impl Poller {
     /// Creates a new poller.
-    pub fn new() -> io::Result<Self> {
+    pub fn new() -> Result<Self> {
         let handle = unsafe { CreateIoCompletionPort(INVALID_HANDLE_VALUE, 0, 0, 0) };
         if handle == 0 {
-            return Err(io::Error::last_os_error());
+            return Err(Error::last_os_error());
         }
 
-        let port = unsafe { OwnedHandle::from_raw_handle(handle as _) };
+        let port = unsafe { OwnedHandle::from_raw_handle(handle) };
         Ok(Poller {
             port,
-            sources: RwLock::default(),
-            waitables: Mutex::default(),
+            sources: BTreeMap::new(),
+            waitables: BTreeMap::new(),
         })
     }
 
     /// Adds a new socket.
-    pub fn add(&self, socket: RawSocket, interest: Event, mode: PollMode) -> io::Result<()> {
-        let mut sources = lock!(self.sources.write());
-        if sources.contains_key(&socket) {
-            return Err(io::Error::from(io::ErrorKind::AlreadyExists));
+    pub fn add(&mut self, socket: SOCKET, interest: Event, mode: PollMode) -> Result<()> {
+        if self.sources.contains_key(&socket) {
+            return Err(Error(ERROR_ALREADY_EXISTS));
         }
-        sources.insert(socket, interest.key);
+        self.sources.insert(socket, interest.key);
 
         let info = create_registration(socket, interest, mode, true);
         self.update_source(info)
     }
 
     /// Modifies an existing socket.
-    pub fn modify(&self, socket: RawSocket, interest: Event, mode: PollMode) -> io::Result<()> {
-        let sources = lock!(self.sources.read());
-        let oldkey = sources
-            .get(&socket)
-            .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?;
+    pub fn modify(&self, socket: SOCKET, interest: Event, mode: PollMode) -> Result<()> {
+        let oldkey = self.sources.get(&socket).ok_or(Error(ERROR_NOT_FOUND))?;
 
         if oldkey != &interest.key {
             // To change the key, remove the old registration and wait for REMOVE event.
@@ -166,21 +158,18 @@ impl Poller {
     }
 
     /// Deletes a socket.
-    pub fn delete(&self, socket: RawSocket) -> io::Result<()> {
-        let key = lock!(self.sources.write())
-            .remove(&socket)
-            .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?;
+    pub fn delete(&mut self, socket: SOCKET) -> Result<()> {
+        let key = self.sources.remove(&socket).ok_or(Error(ERROR_NOT_FOUND))?;
         let info = create_registration(socket, Event::none(key), PollMode::Oneshot, false);
         self.update_and_wait_for_remove(info, key)
     }
 
     /// Add a new waitable to the poller.
-    pub fn add_waitable(&self, handle: RawHandle, interest: Event) -> io::Result<()> {
+    pub fn add_waitable(&mut self, handle: HANDLE, interest: Event) -> Result<()> {
         let key = interest.key;
 
-        let mut waitables = lock!(self.waitables.lock());
-        if waitables.contains_key(&handle) {
-            return Err(io::Error::from(io::ErrorKind::AlreadyExists));
+        if self.waitables.contains_key(&handle) {
+            return Err(Error(ERROR_ALREADY_EXISTS));
         }
 
         let mut packet = wait::WaitCompletionPacket::new()?;
@@ -190,16 +179,16 @@ impl Poller {
             key,
             interest_to_events(&interest) as _,
         )?;
-        waitables.insert(handle, WaitableAttr { key, packet });
+        self.waitables.insert(handle, WaitableAttr { key, packet });
         Ok(())
     }
 
     /// Update a waitable in the poller.
-    pub fn modify_waitable(&self, waitable: RawHandle, interest: Event) -> io::Result<()> {
-        let mut waitables = lock!(self.waitables.lock());
-        let WaitableAttr { key, packet } = waitables
+    pub fn modify_waitable(&mut self, waitable: HANDLE, interest: Event) -> Result<()> {
+        let WaitableAttr { key, packet } = self
+            .waitables
             .get_mut(&waitable)
-            .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?;
+            .ok_or(Error(ERROR_NOT_FOUND))?;
 
         let cancelled = packet.cancel()?;
         if !cancelled {
@@ -215,20 +204,21 @@ impl Poller {
     }
 
     /// Delete a waitable from the poller.
-    pub fn delete_waitable(&self, waitable: RawHandle) -> io::Result<()> {
-        let WaitableAttr { mut packet, .. } = lock!(self.waitables.lock())
+    pub fn delete_waitable(&mut self, waitable: HANDLE) -> Result<()> {
+        let WaitableAttr { mut packet, .. } = self
+            .waitables
             .remove(&waitable)
-            .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?;
+            .ok_or(Error(ERROR_NOT_FOUND))?;
 
         packet.cancel()?;
         Ok(())
     }
 
     /// Add or modify the registration.
-    fn update_source(&self, mut reg: SOCK_NOTIFY_REGISTRATION) -> io::Result<()> {
+    fn update_source(&self, mut reg: SOCK_NOTIFY_REGISTRATION) -> Result<()> {
         let res = unsafe {
             ProcessSocketNotifications(
-                self.port.as_raw_handle() as _,
+                self.port.as_raw_handle(),
                 1,
                 &mut reg,
                 0,
@@ -241,10 +231,10 @@ impl Poller {
             if reg.registrationResult == ERROR_SUCCESS {
                 Ok(())
             } else {
-                Err(io::Error::from_raw_os_error(reg.registrationResult as _))
+                Err(Error(reg.registrationResult))
             }
         } else {
-            Err(io::Error::from_raw_os_error(res as _))
+            Err(Error(res))
         }
     }
 
@@ -254,7 +244,7 @@ impl Poller {
         &self,
         mut reg: SOCK_NOTIFY_REGISTRATION,
         key: usize,
-    ) -> io::Result<()> {
+    ) -> Result<()> {
         debug_assert_eq!(reg.operation, SOCK_NOTIFY_OP_REMOVE as _);
         let mut received = 0;
         let mut entry: MaybeUninit<OVERLAPPED_ENTRY> = MaybeUninit::uninit();
@@ -271,7 +261,7 @@ impl Poller {
         // However, the returned completion entry may not be the wanted REMOVE event.
         let res = unsafe {
             ProcessSocketNotifications(
-                self.port.as_raw_handle() as _,
+                self.port.as_raw_handle(),
                 1,
                 &mut reg,
                 0,
@@ -287,10 +277,10 @@ impl Poller {
                     if received == 1 {
                         repost(unsafe { entry.assume_init() })?;
                     }
-                    return Err(io::Error::from_raw_os_error(reg.registrationResult as _));
+                    return Err(Error(reg.registrationResult));
                 }
             }
-            _ => return Err(io::Error::from_raw_os_error(res as _)),
+            _ => return Err(Error(res)),
         }
         if received == 1 {
             // The registration is successful, and check the received entry.
@@ -310,7 +300,7 @@ impl Poller {
         loop {
             let res = unsafe {
                 ProcessSocketNotifications(
-                    self.port.as_raw_handle() as _,
+                    self.port.as_raw_handle(),
                     0,
                     null_mut(),
                     0,
@@ -332,7 +322,7 @@ impl Poller {
                     }
                 }
                 WAIT_TIMEOUT => {}
-                _ => return Err(io::Error::from_raw_os_error(res as _)),
+                _ => return Err(Error(res)),
             }
         }
     }
@@ -343,12 +333,12 @@ impl Poller {
         events: &mut [MaybeUninit<OVERLAPPED_ENTRY>],
         timeout: Option<Duration>,
         alertable: bool,
-    ) -> io::Result<usize> {
+    ) -> Result<usize> {
         let timeout = timeout.map_or(INFINITE, dur2timeout);
         let mut received = 0;
         let res = unsafe {
             GetQueuedCompletionStatusEx(
-                self.port.as_raw_handle() as _,
+                self.port.as_raw_handle(),
                 events.as_mut_ptr().cast(),
                 events.len() as _,
                 &mut received,
@@ -359,46 +349,26 @@ impl Poller {
         match res as u32 {
             ERROR_SUCCESS => Ok(received as _),
             WAIT_TIMEOUT | WAIT_IO_COMPLETION => Ok(0),
-            _ => Err(io::Error::last_os_error()),
+            _ => Err(Error::last_os_error()),
         }
     }
 
     /// Push an IOCP packet into the queue.
-    pub fn post(&self, event: Event) -> io::Result<()> {
+    pub fn post(&self, event: Event) -> Result<()> {
         self.post_raw(interest_to_events(&event), event.key, null_mut())
     }
 
-    fn post_raw(
-        &self,
-        transferred: u32,
-        key: usize,
-        overlapped: *mut OVERLAPPED,
-    ) -> io::Result<()> {
+    fn post_raw(&self, transferred: u32, key: usize, overlapped: *mut OVERLAPPED) -> Result<()> {
         let res = unsafe {
-            PostQueuedCompletionStatus(self.port.as_raw_handle() as _, transferred, key, overlapped)
+            PostQueuedCompletionStatus(self.port.as_raw_handle(), transferred, key, overlapped)
         };
         if res == 0 {
-            Err(io::Error::last_os_error())
+            Err(Error::last_os_error())
         } else {
             Ok(())
         }
     }
 }
-
-impl AsRawHandle for Poller {
-    fn as_raw_handle(&self) -> RawHandle {
-        self.port.as_raw_handle()
-    }
-}
-
-impl AsHandle for Poller {
-    fn as_handle(&self) -> BorrowedHandle<'_> {
-        self.port.as_handle()
-    }
-}
-
-unsafe impl Send for Poller {}
-unsafe impl Sync for Poller {}
 
 /// Indicates that a socket can read or write without blocking.
 #[derive(Debug, Clone, Copy)]
@@ -520,14 +490,14 @@ pub(crate) fn mode_to_flags(mode: PollMode) -> u8 {
 }
 
 pub(crate) fn create_registration(
-    socket: RawSocket,
+    socket: SOCKET,
     interest: Event,
     mode: PollMode,
     enable: bool,
 ) -> SOCK_NOTIFY_REGISTRATION {
     let filter = interest_to_filter(&interest);
     SOCK_NOTIFY_REGISTRATION {
-        socket: socket as _,
+        socket,
         completionKey: interest.key as _,
         eventFilter: filter,
         operation: if enable {
