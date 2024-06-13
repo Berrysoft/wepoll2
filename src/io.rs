@@ -1,6 +1,6 @@
 use core::{
     alloc::{GlobalAlloc, Layout},
-    panic::PanicInfo,
+    fmt::Debug,
 };
 
 use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, HANDLE, WIN32_ERROR};
@@ -34,11 +34,18 @@ impl Error {
     }
 }
 
+impl Debug for Error {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::result::Result<(), core::fmt::Error> {
+        errno::Errno(self.0 as _).fmt(f)
+    }
+}
+
 /// Win32 result.
 pub type Result<T> = core::result::Result<T, Error>;
 
 #[panic_handler]
-fn panic(_: &PanicInfo) -> ! {
+#[cfg(not(feature = "std"))]
+fn panic(_: &core::panic::PanicInfo) -> ! {
     unsafe { libc::abort() }
 }
 

@@ -17,7 +17,7 @@
 
 #![feature(allocator_api, try_blocks, try_with_capacity)]
 #![warn(missing_docs)]
-#![no_std]
+#![cfg_attr(not(feature = "std"), no_std)]
 
 extern crate alloc;
 
@@ -33,8 +33,8 @@ pub use io::{Error, Result};
 use wait::WaitCompletionPacket;
 use windows_sys::Win32::{
     Foundation::{
-        ERROR_ALREADY_EXISTS, ERROR_NOT_FOUND, ERROR_SUCCESS, HANDLE, INVALID_HANDLE_VALUE,
-        WAIT_IO_COMPLETION, WAIT_TIMEOUT,
+        GetLastError, ERROR_ALREADY_EXISTS, ERROR_NOT_FOUND, ERROR_SUCCESS, HANDLE,
+        INVALID_HANDLE_VALUE, WAIT_IO_COMPLETION, WAIT_TIMEOUT,
     },
     Networking::WinSock::{
         ProcessSocketNotifications, SOCKET, SOCK_NOTIFY_EVENT_ERR, SOCK_NOTIFY_EVENT_HANGUP,
@@ -346,10 +346,14 @@ impl Poller {
                 alertable as _,
             )
         };
-        match res as u32 {
-            ERROR_SUCCESS => Ok(received as _),
-            WAIT_TIMEOUT | WAIT_IO_COMPLETION => Ok(0),
-            _ => Err(Error::last_os_error()),
+        if res != 0 {
+            Ok(received as _)
+        } else {
+            let err = unsafe { GetLastError() };
+            match err {
+                WAIT_TIMEOUT | WAIT_IO_COMPLETION => Ok(0),
+                _ => Err(Error(err)),
+            }
         }
     }
 
