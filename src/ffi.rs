@@ -226,7 +226,7 @@ pub unsafe extern "C" fn epoll_pwait2(
 
 fn is_socket(handle: HANDLE) -> bool {
     let res = unsafe { WSAGetQOSByName(handle as _, null(), null_mut()) };
-    res == 0 && (unsafe { WSAGetLastError() } != WSAENOTSOCK)
+    res != 0 || (unsafe { WSAGetLastError() } != WSAENOTSOCK)
 }
 
 fn interest_mode(event: *const Event) -> Result<(Event, PollMode)> {
