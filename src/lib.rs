@@ -15,7 +15,7 @@
 //! of thread pool APIs like `RegisterWaitForSingleObject`. We use it to avoid
 //! starting thread pools. It only supports `Oneshot` mode.
 
-#![feature(allocator_api, try_blocks)]
+#![feature(allocator_api, try_blocks, try_with_capacity)]
 #![warn(missing_docs)]
 #![no_std]
 
@@ -439,8 +439,8 @@ impl Event {
     }
 }
 
-impl From<OVERLAPPED_ENTRY> for Event {
-    fn from(value: OVERLAPPED_ENTRY) -> Self {
+impl From<&OVERLAPPED_ENTRY> for Event {
+    fn from(value: &OVERLAPPED_ENTRY) -> Self {
         Self {
             events: value.dwNumberOfBytesTransferred,
             key: value.lpCompletionKey,

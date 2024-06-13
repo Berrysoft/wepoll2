@@ -1,6 +1,6 @@
 //! FFI of this crate. Imitate epoll(2).
 
-use alloc::boxed::Box;
+use alloc::{boxed::Box, vec::Vec};
 use core::{
     ffi::c_int,
     mem::MaybeUninit,
@@ -8,7 +8,7 @@ use core::{
     time::Duration,
 };
 
-use smallvec::SmallVec;
+use either::Either;
 use windows_sys::Win32::{
     Foundation::{SetLastError, ERROR_INVALID_PARAMETER, ERROR_NOT_ENOUGH_MEMORY, HANDLE},
     Networking::WinSock::{WSAGetLastError, WSAGetQOSByName, SOCKET, WSAENOTSOCK},
@@ -128,18 +128,27 @@ unsafe fn epoll_wait_duration(
             if len != 0 {
                 check_pointer(events)?;
             }
+            let len = len as usize;
             let events: &mut [MaybeUninit<Event>] =
-                unsafe { core::slice::from_raw_parts_mut(events.cast(), len as _) };
+                unsafe { core::slice::from_raw_parts_mut(events.cast(), len) };
 
-            let mut entries = SmallVec::<[OVERLAPPED_ENTRY; 256]>::with_capacity(events.len());
-            let spare_entries = unsafe {
-                core::slice::from_raw_parts_mut(entries.as_mut_ptr().cast(), entries.capacity())
+            const STATIC_ENTRIES_COUNT: usize = 256;
+
+            let mut static_entries: [MaybeUninit<OVERLAPPED_ENTRY>; STATIC_ENTRIES_COUNT] =
+                [MaybeUninit::uninit(); STATIC_ENTRIES_COUNT];
+            let mut spare_entries = if len > STATIC_ENTRIES_COUNT {
+                Either::Left(
+                    Vec::try_with_capacity(len).map_err(|_| Error(ERROR_NOT_ENOUGH_MEMORY))?,
+                )
+            } else {
+                Either::Right(&mut static_entries)
             };
-            let len = poller.wait(spare_entries, timeout, alertable)?;
-            unsafe { entries.set_len(len) };
+            let entries_mut = AsMut::as_mut(&mut spare_entries);
 
-            for (ev, entry) in events.iter_mut().zip(entries) {
-                ev.write(Event::from(entry));
+            let len = poller.wait(entries_mut, timeout, alertable)?;
+
+            for (ev, entry) in events.get_unchecked_mut(..len).iter_mut().zip(entries_mut) {
+                ev.write(Event::from(MaybeUninit::assume_init_ref(entry)));
             }
 
             len as _
