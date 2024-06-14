@@ -1,18 +1,15 @@
 //! FFI of this crate. Imitate epoll(2).
 
-use alloc::{boxed::Box, vec::Vec};
+use alloc::boxed::Box;
 use core::{
     ffi::c_int,
-    mem::MaybeUninit,
     ptr::{null, null_mut},
     time::Duration,
 };
 
-use either::Either;
 use windows_sys::Win32::{
     Foundation::{SetLastError, ERROR_INVALID_PARAMETER, ERROR_NOT_ENOUGH_MEMORY, HANDLE},
     Networking::WinSock::{WSAGetLastError, WSAGetQOSByName, SOCKET, WSAENOTSOCK},
-    System::IO::OVERLAPPED_ENTRY,
 };
 
 use crate::{Error, Event, PollMode, Poller, Result};
@@ -129,27 +126,9 @@ unsafe fn epoll_wait_duration(
                 check_pointer(events)?;
             }
             let len = len as usize;
-            let events: &mut [MaybeUninit<Event>] =
-                unsafe { core::slice::from_raw_parts_mut(events.cast(), len) };
+            let events = unsafe { core::slice::from_raw_parts_mut(events.cast(), len) };
 
-            const STATIC_ENTRIES_COUNT: usize = 256;
-
-            let mut static_entries: [MaybeUninit<OVERLAPPED_ENTRY>; STATIC_ENTRIES_COUNT] =
-                [MaybeUninit::uninit(); STATIC_ENTRIES_COUNT];
-            let mut spare_entries = if len > STATIC_ENTRIES_COUNT {
-                Either::Left(
-                    Vec::try_with_capacity(len).map_err(|_| Error(ERROR_NOT_ENOUGH_MEMORY))?,
-                )
-            } else {
-                Either::Right(&mut static_entries)
-            };
-            let entries_mut = AsMut::as_mut(&mut spare_entries);
-
-            let len = poller.wait(entries_mut, timeout, alertable)?;
-
-            for (ev, entry) in events.get_unchecked_mut(..len).iter_mut().zip(entries_mut) {
-                ev.write(Event::from(MaybeUninit::assume_init_ref(entry)));
-            }
+            let len = poller.wait(events, timeout, alertable)?;
 
             len as _
         },
@@ -230,7 +209,7 @@ fn is_socket(handle: HANDLE) -> bool {
 
 fn interest_mode(event: *const Event) -> Result<(Event, PollMode)> {
     let event = check_pointer(event)?;
-    let events = event.events as c_int;
+    let events = event.events() as c_int;
     let mode = match (((events & EPOLLET) != 0), ((events & EPOLLONESHOT) != 0)) {
         (false, false) => PollMode::Level,
         (false, true) => PollMode::Oneshot,

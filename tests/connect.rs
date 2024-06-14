@@ -18,8 +18,7 @@ fn poll_connect() {
     client.set_nonblocking(true).unwrap();
 
     let mut poller = Poller::new().unwrap();
-    let mut interest = Event::none(114514);
-    interest.set_writable(true);
+    let interest = Event::none(114514).with_writable(true);
     poller
         .add(client.as_raw_socket() as _, interest, PollMode::Level)
         .unwrap();
@@ -38,8 +37,8 @@ fn poll_connect() {
         let mut bytes_sent = 0;
         loop {
             assert_eq!(len, 1);
-            let event = Event::from(unsafe { MaybeUninit::assume_init_ref(&entries[0]) });
-            assert_eq!(event.key, 114514);
+            let event = unsafe { MaybeUninit::assume_init_ref(&entries[0]) };
+            assert_eq!(event.key(), 114514);
             assert!(event.is_writable());
 
             match client.send(&buf) {

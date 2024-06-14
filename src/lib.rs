@@ -138,7 +138,7 @@ impl Poller {
         if self.sources.contains_key(&socket) {
             return Err(Error(ERROR_ALREADY_EXISTS));
         }
-        self.sources.insert(socket, interest.key);
+        self.sources.insert(socket, interest.key());
 
         let info = create_registration(socket, interest, mode, true);
         self.update_source(info)
@@ -148,7 +148,7 @@ impl Poller {
     pub fn modify(&self, socket: SOCKET, interest: Event, mode: PollMode) -> Result<()> {
         let oldkey = self.sources.get(&socket).ok_or(Error(ERROR_NOT_FOUND))?;
 
-        if oldkey != &interest.key {
+        if oldkey != &interest.key() {
             // To change the key, remove the old registration and wait for REMOVE event.
             let info = create_registration(socket, Event::none(*oldkey), PollMode::Oneshot, false);
             self.update_and_wait_for_remove(info, *oldkey)?;
@@ -166,7 +166,7 @@ impl Poller {
 
     /// Add a new waitable to the poller.
     pub fn add_waitable(&mut self, handle: HANDLE, interest: Event) -> Result<()> {
-        let key = interest.key;
+        let key = interest.key();
 
         if self.waitables.contains_key(&handle) {
             return Err(Error(ERROR_ALREADY_EXISTS));
@@ -330,7 +330,7 @@ impl Poller {
     /// Waits for I/O events with an optional timeout.
     pub fn wait(
         &self,
-        events: &mut [MaybeUninit<OVERLAPPED_ENTRY>],
+        events: &mut [MaybeUninit<Event>],
         timeout: Option<Duration>,
         alertable: bool,
     ) -> Result<usize> {
@@ -359,7 +359,7 @@ impl Poller {
 
     /// Push an IOCP packet into the queue.
     pub fn post(&self, event: Event) -> Result<()> {
-        self.post_raw(interest_to_events(&event), event.key, null_mut())
+        self.post_raw(interest_to_events(&event), event.key(), null_mut())
     }
 
     fn post_raw(&self, transferred: u32, key: usize, overlapped: *mut OVERLAPPED) -> Result<()> {
@@ -375,31 +375,41 @@ impl Poller {
 }
 
 /// Indicates that a socket can read or write without blocking.
-#[derive(Debug, Clone, Copy)]
-#[repr(C)]
-pub struct Event {
-    /// The available events.
-    pub events: u32,
-    /// Key identifying the socket.
-    pub key: usize,
-}
+#[derive(Clone, Copy)]
+#[repr(transparent)]
+pub struct Event(pub OVERLAPPED_ENTRY);
 
 impl Event {
     /// Create an event with no interest.
     pub fn none(key: usize) -> Self {
-        Self { events: 0, key }
+        Self(OVERLAPPED_ENTRY {
+            lpCompletionKey: key,
+            lpOverlapped: null_mut(),
+            Internal: 0,
+            dwNumberOfBytesTransferred: 0,
+        })
+    }
+
+    /// Key of the event.
+    pub const fn key(&self) -> usize {
+        self.0.lpCompletionKey
+    }
+
+    /// The flags of the event.
+    pub const fn events(&self) -> u32 {
+        self.0.dwNumberOfBytesTransferred
     }
 
     fn set_event(&mut self, e: u32, value: bool) {
         if value {
-            self.events |= e;
+            self.0.dwNumberOfBytesTransferred |= e;
         } else {
-            self.events &= !e;
+            self.0.dwNumberOfBytesTransferred &= !e;
         }
     }
 
     fn get_event(&self, e: u32) -> bool {
-        (self.events & e) != 0
+        (self.events() & e) != 0
     }
 
     /// Interest in readable event.
@@ -422,6 +432,30 @@ impl Event {
         self.set_event(SOCK_NOTIFY_EVENT_ERR, value)
     }
 
+    /// Interest in readable event.
+    pub fn with_readable(mut self, value: bool) -> Self {
+        self.set_readable(value);
+        self
+    }
+
+    /// Interest in writable event.
+    pub fn with_writable(mut self, value: bool) -> Self {
+        self.set_writable(value);
+        self
+    }
+
+    /// Interest in hangup event.
+    pub fn with_hangup(mut self, value: bool) -> Self {
+        self.set_hangup(value);
+        self
+    }
+
+    /// Interest in error event.
+    pub fn with_error(mut self, value: bool) -> Self {
+        self.set_error(value);
+        self
+    }
+
     /// Is readable event.
     pub fn is_readable(&self) -> bool {
         self.get_event(SOCK_NOTIFY_EVENT_IN)
@@ -440,15 +474,6 @@ impl Event {
     /// Is error event.
     pub fn is_error(&self) -> bool {
         self.get_event(SOCK_NOTIFY_EVENT_ERR)
-    }
-}
-
-impl From<&OVERLAPPED_ENTRY> for Event {
-    fn from(value: &OVERLAPPED_ENTRY) -> Self {
-        Self {
-            events: value.dwNumberOfBytesTransferred,
-            key: value.lpCompletionKey,
-        }
     }
 }
 
@@ -502,7 +527,7 @@ pub(crate) fn create_registration(
     let filter = interest_to_filter(&interest);
     SOCK_NOTIFY_REGISTRATION {
         socket,
-        completionKey: interest.key as _,
+        completionKey: interest.key() as _,
         eventFilter: filter,
         operation: if enable {
             if filter == SOCK_NOTIFY_REGISTER_EVENT_NONE as _ {
