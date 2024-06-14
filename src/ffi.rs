@@ -214,9 +214,8 @@ pub unsafe extern "C" fn epoll_pwait2(
         epoll_wait_duration(poller, events, len, None, alertable)
     } else if timeout.is_aligned() {
         let timeout = unsafe { &*timeout };
-        let timeout = Some(
-            Duration::from_nanos(timeout.tv_nsec as _) + Duration::from_secs(timeout.tv_sec as _),
-        );
+        let timeout = Duration::from_nanos(timeout.tv_nsec as _)
+            .checked_add(Duration::from_secs(timeout.tv_sec as _));
         epoll_wait_duration(poller, events, len, timeout, alertable)
     } else {
         unsafe { SetLastError(ERROR_INVALID_PARAMETER) };
