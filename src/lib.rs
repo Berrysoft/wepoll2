@@ -35,8 +35,9 @@ use lock::RwLock;
 use wait::WaitCompletionPacket;
 use windows_sys::Win32::{
     Foundation::{
-        GetLastError, ERROR_ALREADY_EXISTS, ERROR_NOT_FOUND, ERROR_SUCCESS, HANDLE,
-        INVALID_HANDLE_VALUE, WAIT_IO_COMPLETION, WAIT_TIMEOUT,
+        RtlNtStatusToDosError, BOOLEAN, ERROR_ALREADY_EXISTS, ERROR_NOT_FOUND, ERROR_SUCCESS,
+        HANDLE, INVALID_HANDLE_VALUE, NTSTATUS, STATUS_SUCCESS, STATUS_TIMEOUT, STATUS_USER_APC,
+        WAIT_TIMEOUT,
     },
     Networking::WinSock::{
         ProcessSocketNotifications, SOCKET, SOCK_NOTIFY_EVENT_ERR, SOCK_NOTIFY_EVENT_HANGUP,
@@ -47,12 +48,8 @@ use windows_sys::Win32::{
         SOCK_NOTIFY_TRIGGER_EDGE, SOCK_NOTIFY_TRIGGER_LEVEL, SOCK_NOTIFY_TRIGGER_ONESHOT,
         SOCK_NOTIFY_TRIGGER_PERSISTENT,
     },
-    System::{
-        Threading::INFINITE,
-        IO::{
-            CreateIoCompletionPort, GetQueuedCompletionStatusEx, PostQueuedCompletionStatus,
-            OVERLAPPED, OVERLAPPED_ENTRY,
-        },
+    System::IO::{
+        CreateIoCompletionPort, PostQueuedCompletionStatus, OVERLAPPED, OVERLAPPED_ENTRY,
     },
 };
 
@@ -342,26 +339,40 @@ impl Poller {
         timeout: Option<Duration>,
         alertable: bool,
     ) -> Result<usize> {
-        let timeout = timeout.map_or(INFINITE, dur2timeout);
+        #[link(name = "ntdll")]
+        extern "system" {
+            fn NtRemoveIoCompletionEx(
+                handle: HANDLE,
+                information: *mut MaybeUninit<OVERLAPPED_ENTRY>,
+                count: u32,
+                removed: *mut u32,
+                timeout: Option<&mut u64>,
+                alertable: BOOLEAN,
+            ) -> NTSTATUS;
+        }
+
+        let mut timeout: Option<u64> = timeout.and_then(|dur| {
+            dur.as_secs()
+                .checked_mul(10_000_000)
+                .and_then(|ns| ns.checked_add(dur.subsec_nanos().div_ceil(100) as _))
+                .and_then(|ns| (ns as i64).checked_neg())
+                .map(|ns| ns as u64)
+        });
         let mut received = 0;
         let res = unsafe {
-            GetQueuedCompletionStatusEx(
+            NtRemoveIoCompletionEx(
                 self.port.as_raw_handle(),
                 events.as_mut_ptr().cast(),
                 events.len() as _,
                 &mut received,
-                timeout,
+                timeout.as_mut(),
                 alertable as _,
             )
         };
-        if res != 0 {
-            Ok(received as _)
-        } else {
-            let err = unsafe { GetLastError() };
-            match err {
-                WAIT_TIMEOUT | WAIT_IO_COMPLETION => Ok(0),
-                _ => Err(Error(err)),
-            }
+        match res {
+            STATUS_SUCCESS => Ok(received as _),
+            STATUS_TIMEOUT | STATUS_USER_APC => Ok(0),
+            _ => Err(Error(unsafe { RtlNtStatusToDosError(res) })),
         }
     }
 
@@ -549,27 +560,4 @@ pub(crate) fn create_registration(
         triggerFlags: mode_to_flags(mode),
         registrationResult: 0,
     }
-}
-
-// Implementation taken from https://github.com/rust-lang/rust/blob/db5476571d9b27c862b95c1e64764b0ac8980e23/src/libstd/sys/windows/mod.rs
-fn dur2timeout(dur: Duration) -> u32 {
-    // Note that a duration is a (u64, u32) (seconds, nanoseconds) pair, and the
-    // timeouts in windows APIs are typically u32 milliseconds. To translate, we
-    // have two pieces to take care of:
-    //
-    // * Nanosecond precision is rounded up
-    // * Greater than u32::MAX milliseconds (50 days) is rounded up to INFINITE
-    //   (never time out).
-    dur.as_secs()
-        .checked_mul(1000)
-        .and_then(|ms| ms.checked_add((dur.subsec_nanos() as u64) / 1_000_000))
-        .and_then(|ms| {
-            if dur.subsec_nanos() % 1_000_000 > 0 {
-                ms.checked_add(1)
-            } else {
-                Some(ms)
-            }
-        })
-        .and_then(|x| u32::try_from(x).ok())
-        .unwrap_or(INFINITE)
 }
