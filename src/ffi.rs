@@ -39,15 +39,6 @@ fn check_pointer<'a, T>(ptr: *const T) -> Result<&'a T> {
     }
 }
 
-#[inline]
-fn check_pointer_mut<'a, T>(ptr: *mut T) -> Result<&'a mut T> {
-    if ptr.is_aligned() && !ptr.is_null() {
-        Ok(unsafe { &mut *ptr })
-    } else {
-        Err(Error(ERROR_INVALID_PARAMETER))
-    }
-}
-
 /// Readable event.
 pub const EPOLLIN: c_int = 1 << 0;
 /// Writable event.
@@ -219,12 +210,7 @@ fn interest_mode(event: *const Event) -> Result<(Event, PollMode)> {
     Ok((*event, mode))
 }
 
-fn epoll_ctl_socket(
-    poller: &mut Poller,
-    op: c_int,
-    socket: SOCKET,
-    event: *const Event,
-) -> Result<()> {
+fn epoll_ctl_socket(poller: &Poller, op: c_int, socket: SOCKET, event: *const Event) -> Result<()> {
     match op {
         EPOLL_CTL_ADD => {
             let (interest, mode) = interest_mode(event)?;
@@ -241,7 +227,7 @@ fn epoll_ctl_socket(
 }
 
 fn epoll_ctl_waitable(
-    poller: &mut Poller,
+    poller: &Poller,
     op: c_int,
     handle: HANDLE,
     event: *const Event,
@@ -262,14 +248,14 @@ fn epoll_ctl_waitable(
 /// Given pointer should be valid.
 #[no_mangle]
 pub unsafe extern "C" fn epoll_ctl(
-    poller: *mut Poller,
+    poller: *const Poller,
     op: c_int,
     handle: HANDLE,
     event: *mut Event,
 ) -> c_int {
     io_result_ret(
         try {
-            let poller = check_pointer_mut(poller)?;
+            let poller = check_pointer(poller)?;
             if is_socket(handle) {
                 epoll_ctl_socket(poller, op, handle as _, event)?;
             } else {

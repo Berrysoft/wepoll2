@@ -1,2 +1,2 @@
 [build]
-rustflags = "-C panic=abort -Zpanic_abort_tests"
+rustflags = "-C panic=abort -Zpanic_abort_tests --cfg has_const_fn_trait_bound"

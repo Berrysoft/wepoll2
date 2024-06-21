@@ -17,7 +17,7 @@ fn poll_connect() {
     let client = Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::TCP)).unwrap();
     client.set_nonblocking(true).unwrap();
 
-    let mut poller = Poller::new().unwrap();
+    let poller = Poller::new().unwrap();
     let interest = Event::none(114514).with_writable(true);
     poller
         .add(client.as_raw_socket() as _, interest, PollMode::Level)

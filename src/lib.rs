@@ -23,6 +23,7 @@ extern crate alloc;
 
 pub mod ffi;
 mod io;
+mod lock;
 mod wait;
 
 use alloc::collections::BTreeMap;
@@ -30,6 +31,7 @@ use core::{mem::MaybeUninit, ptr::null_mut, time::Duration};
 
 use io::OwnedHandle;
 pub use io::{Error, Result};
+use lock::RwLock;
 use wait::WaitCompletionPacket;
 use windows_sys::Win32::{
     Foundation::{
@@ -102,10 +104,10 @@ pub struct Poller {
     /// The state of the sources registered with this poller.
     ///
     /// Each source is keyed by its raw socket ID.
-    sources: BTreeMap<SOCKET, usize>,
+    sources: RwLock<BTreeMap<SOCKET, usize>>,
 
     /// The state of the waitable handles registered with this poller.
-    waitables: BTreeMap<HANDLE, WaitableAttr>,
+    waitables: RwLock<BTreeMap<HANDLE, WaitableAttr>>,
 }
 
 /// A waitable object with key and [`WaitCompletionPacket`].
@@ -128,17 +130,18 @@ impl Poller {
         let port = unsafe { OwnedHandle::from_raw_handle(handle) };
         Ok(Poller {
             port,
-            sources: BTreeMap::new(),
-            waitables: BTreeMap::new(),
+            sources: RwLock::new(BTreeMap::new()),
+            waitables: RwLock::new(BTreeMap::new()),
         })
     }
 
     /// Adds a new socket.
-    pub fn add(&mut self, socket: SOCKET, interest: Event, mode: PollMode) -> Result<()> {
-        if self.sources.contains_key(&socket) {
+    pub fn add(&self, socket: SOCKET, interest: Event, mode: PollMode) -> Result<()> {
+        let mut sources = self.sources.write();
+        if sources.contains_key(&socket) {
             return Err(Error(ERROR_ALREADY_EXISTS));
         }
-        self.sources.insert(socket, interest.key());
+        sources.insert(socket, interest.key());
 
         let info = create_registration(socket, interest, mode, true);
         self.update_source(info)
@@ -146,7 +149,8 @@ impl Poller {
 
     /// Modifies an existing socket.
     pub fn modify(&self, socket: SOCKET, interest: Event, mode: PollMode) -> Result<()> {
-        let oldkey = self.sources.get(&socket).ok_or(Error(ERROR_NOT_FOUND))?;
+        let sources = self.sources.read();
+        let oldkey = sources.get(&socket).ok_or(Error(ERROR_NOT_FOUND))?;
 
         if oldkey != &interest.key() {
             // To change the key, remove the old registration and wait for REMOVE event.
@@ -158,17 +162,21 @@ impl Poller {
     }
 
     /// Deletes a socket.
-    pub fn delete(&mut self, socket: SOCKET) -> Result<()> {
-        let key = self.sources.remove(&socket).ok_or(Error(ERROR_NOT_FOUND))?;
+    pub fn delete(&self, socket: SOCKET) -> Result<()> {
+        let key = self
+            .sources
+            .write()
+            .remove(&socket)
+            .ok_or(Error(ERROR_NOT_FOUND))?;
         let info = create_registration(socket, Event::none(key), PollMode::Oneshot, false);
         self.update_and_wait_for_remove(info, key)
     }
 
     /// Add a new waitable to the poller.
-    pub fn add_waitable(&mut self, handle: HANDLE, interest: Event) -> Result<()> {
+    pub fn add_waitable(&self, handle: HANDLE, interest: Event) -> Result<()> {
         let key = interest.key();
-
-        if self.waitables.contains_key(&handle) {
+        let mut waitables = self.waitables.write();
+        if waitables.contains_key(&handle) {
             return Err(Error(ERROR_ALREADY_EXISTS));
         }
 
@@ -179,16 +187,15 @@ impl Poller {
             key,
             interest_to_events(&interest) as _,
         )?;
-        self.waitables.insert(handle, WaitableAttr { key, packet });
+        waitables.insert(handle, WaitableAttr { key, packet });
         Ok(())
     }
 
     /// Update a waitable in the poller.
-    pub fn modify_waitable(&mut self, waitable: HANDLE, interest: Event) -> Result<()> {
-        let WaitableAttr { key, packet } = self
-            .waitables
-            .get_mut(&waitable)
-            .ok_or(Error(ERROR_NOT_FOUND))?;
+    pub fn modify_waitable(&self, waitable: HANDLE, interest: Event) -> Result<()> {
+        let mut waitables = self.waitables.write();
+        let WaitableAttr { key, packet } =
+            waitables.get_mut(&waitable).ok_or(Error(ERROR_NOT_FOUND))?;
 
         let cancelled = packet.cancel()?;
         if !cancelled {
@@ -204,9 +211,10 @@ impl Poller {
     }
 
     /// Delete a waitable from the poller.
-    pub fn delete_waitable(&mut self, waitable: HANDLE) -> Result<()> {
+    pub fn delete_waitable(&self, waitable: HANDLE) -> Result<()> {
         let WaitableAttr { mut packet, .. } = self
             .waitables
+            .write()
             .remove(&waitable)
             .ok_or(Error(ERROR_NOT_FOUND))?;
 
