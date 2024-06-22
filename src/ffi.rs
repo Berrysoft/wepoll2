@@ -1,6 +1,6 @@
 //! FFI of this crate. Imitate epoll(2).
 
-use alloc::boxed::Box;
+use alloc::collections::BTreeMap;
 use core::{
     ffi::c_int,
     ptr::{null, null_mut},
@@ -8,11 +8,11 @@ use core::{
 };
 
 use windows_sys::Win32::{
-    Foundation::{SetLastError, ERROR_INVALID_PARAMETER, ERROR_NOT_ENOUGH_MEMORY, HANDLE},
+    Foundation::{SetLastError, ERROR_INVALID_PARAMETER, HANDLE},
     Networking::WinSock::{WSAGetLastError, WSAGetQOSByName, SOCKET, WSAENOTSOCK},
 };
 
-use crate::{Error, Event, PollMode, Poller, Result};
+use crate::{lock::RwLock, Error, Event, PollMode, Poller, Result};
 
 #[inline]
 fn io_result_ok<T>(res: Result<T>) -> Option<T> {
@@ -28,6 +28,11 @@ fn io_result_ok<T>(res: Result<T>) -> Option<T> {
 #[inline]
 fn io_result_ret(res: Result<c_int>) -> c_int {
     io_result_ok(res).unwrap_or(-1)
+}
+
+#[inline]
+fn io_result_ret_handle(res: Result<HANDLE>) -> HANDLE {
+    io_result_ok(res).unwrap_or(0)
 }
 
 #[inline]
@@ -59,28 +64,32 @@ pub const EPOLL_CTL_MOD: c_int = 2;
 /// Delete an entry.
 pub const EPOLL_CTL_DEL: c_int = 3;
 
+static POLLER_MAP: RwLock<BTreeMap<HANDLE, Poller>> = RwLock::new(BTreeMap::new());
+
 #[inline(never)]
-fn epoll_try_create() -> Result<Box<Poller>> {
-    Box::try_new(Poller::new()?).map_err(|_| Error(ERROR_NOT_ENOUGH_MEMORY))
+fn epoll_try_create() -> Result<HANDLE> {
+    let poller = Poller::new()?;
+    let handle = poller.port.as_raw_handle();
+    let mut map = POLLER_MAP.write();
+    map.insert(handle, poller);
+    Ok(handle)
 }
 
 /// Create a new wepoll instance. `size` should be positive.
 #[no_mangle]
 #[deprecated]
-pub extern "C" fn epoll_create(size: c_int) -> Option<Box<Poller>> {
-    io_result_ok({
-        if size <= 0 {
-            Err(Error(ERROR_INVALID_PARAMETER))
-        } else {
-            epoll_try_create()
-        }
+pub extern "C" fn epoll_create(size: c_int) -> HANDLE {
+    io_result_ret_handle(if size <= 0 {
+        Err(Error(ERROR_INVALID_PARAMETER))
+    } else {
+        epoll_try_create()
     })
 }
 
 /// Create a new wepoll instance. `flags` should be zero.
 #[no_mangle]
-pub extern "C" fn epoll_create1(flags: c_int) -> Option<Box<Poller>> {
-    io_result_ok({
+pub extern "C" fn epoll_create1(flags: c_int) -> HANDLE {
+    io_result_ret_handle({
         if flags != 0 {
             Err(Error(ERROR_INVALID_PARAMETER))
         } else {
@@ -91,9 +100,9 @@ pub extern "C" fn epoll_create1(flags: c_int) -> Option<Box<Poller>> {
 
 /// Close a wepoll instance.
 #[no_mangle]
-pub extern "C" fn epoll_close(poller: Option<Box<Poller>>) -> c_int {
+pub extern "C" fn epoll_close(poller: HANDLE) -> c_int {
     io_result_ret({
-        if let Some(poller) = poller {
+        if let Some(poller) = POLLER_MAP.write().remove(&poller) {
             drop(poller);
             Ok(0)
         } else {
@@ -104,7 +113,7 @@ pub extern "C" fn epoll_close(poller: Option<Box<Poller>>) -> c_int {
 
 #[inline(never)]
 unsafe fn epoll_wait_duration(
-    poller: *const Poller,
+    poller: HANDLE,
     events: *mut Event,
     len: c_int,
     timeout: Option<Duration>,
@@ -112,7 +121,8 @@ unsafe fn epoll_wait_duration(
 ) -> c_int {
     io_result_ret(
         try {
-            let poller = check_pointer(poller)?;
+            let map = POLLER_MAP.read();
+            let poller = map.get(&poller).ok_or(Error(ERROR_INVALID_PARAMETER))?;
             if len != 0 {
                 check_pointer(events)?;
             }
@@ -133,7 +143,7 @@ unsafe fn epoll_wait_duration(
 /// Given pointer should be valid.
 #[no_mangle]
 pub unsafe extern "C" fn epoll_wait(
-    poller: *const Poller,
+    poller: HANDLE,
     events: *mut Event,
     len: c_int,
     timeout: c_int,
@@ -151,7 +161,7 @@ pub unsafe extern "C" fn epoll_wait(
 #[no_mangle]
 #[inline(never)]
 pub unsafe extern "C" fn epoll_pwait(
-    poller: *const Poller,
+    poller: HANDLE,
     events: *mut Event,
     len: c_int,
     timeout: c_int,
@@ -174,7 +184,7 @@ pub unsafe extern "C" fn epoll_pwait(
 /// Given pointer should be valid.
 #[no_mangle]
 pub unsafe extern "C" fn epoll_pwait2(
-    poller: *const Poller,
+    poller: HANDLE,
     events: *mut Event,
     len: c_int,
     timeout: *const libc::timespec,
@@ -210,7 +220,12 @@ fn interest_mode(event: *const Event) -> Result<(Event, PollMode)> {
     Ok((*event, mode))
 }
 
-fn epoll_ctl_socket(poller: &Poller, op: c_int, socket: SOCKET, event: *const Event) -> Result<()> {
+fn epoll_ctl_socket(
+    poller: &mut Poller,
+    op: c_int,
+    socket: SOCKET,
+    event: *const Event,
+) -> Result<()> {
     match op {
         EPOLL_CTL_ADD => {
             let (interest, mode) = interest_mode(event)?;
@@ -227,7 +242,7 @@ fn epoll_ctl_socket(poller: &Poller, op: c_int, socket: SOCKET, event: *const Ev
 }
 
 fn epoll_ctl_waitable(
-    poller: &Poller,
+    poller: &mut Poller,
     op: c_int,
     handle: HANDLE,
     event: *const Event,
@@ -248,14 +263,15 @@ fn epoll_ctl_waitable(
 /// Given pointer should be valid.
 #[no_mangle]
 pub unsafe extern "C" fn epoll_ctl(
-    poller: *const Poller,
+    poller: HANDLE,
     op: c_int,
     handle: HANDLE,
     event: *mut Event,
 ) -> c_int {
     io_result_ret(
         try {
-            let poller = check_pointer(poller)?;
+            let mut map = POLLER_MAP.write();
+            let poller = map.get_mut(&poller).ok_or(Error(ERROR_INVALID_PARAMETER))?;
             if is_socket(handle) {
                 epoll_ctl_socket(poller, op, handle as _, event)?;
             } else {

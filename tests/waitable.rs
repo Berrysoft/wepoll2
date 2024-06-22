@@ -13,7 +13,7 @@ fn poll_event() {
     assert_ne!(e, 0);
     let e = unsafe { OwnedHandle::from_raw_handle(e as _) };
 
-    let poller = Poller::new().unwrap();
+    let mut poller = Poller::new().unwrap();
     let interest = Event::none(114514).with_readable(true);
     poller
         .add_waitable(e.as_raw_handle() as _, interest)
