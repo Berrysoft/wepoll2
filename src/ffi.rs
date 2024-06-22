@@ -123,11 +123,13 @@ unsafe fn epoll_wait_duration(
         try {
             let map = POLLER_MAP.read();
             let poller = map.get(&poller).ok_or(Error(ERROR_INVALID_PARAMETER))?;
-            if len != 0 {
-                check_pointer(events)?;
-            }
             let len = len as usize;
-            let events = unsafe { core::slice::from_raw_parts_mut(events.cast(), len) };
+            let events = if len != 0 {
+                check_pointer(events)?;
+                unsafe { core::slice::from_raw_parts_mut(events.cast(), len) }
+            } else {
+                &mut []
+            };
 
             let len = poller.wait(events, timeout, alertable)?;
 
@@ -293,7 +295,7 @@ mod test {
     use socket2::{Domain, Protocol, Socket, Type};
     use windows_sys::Win32::System::Threading::CreateEventA;
 
-    use super::is_socket;
+    use super::*;
 
     #[test]
     fn handles() {
@@ -307,5 +309,26 @@ mod test {
         assert_ne!(e, 0);
         let e = unsafe { OwnedHandle::from_raw_handle(e as _) };
         assert!(!is_socket(e.as_raw_handle() as _));
+    }
+
+    #[test]
+    fn create() {
+        let h = epoll_create1(0);
+        assert_ne!(h, 0);
+        assert!(!POLLER_MAP.read().is_empty());
+        let res = epoll_close(h);
+        assert_eq!(res, 0);
+        assert!(POLLER_MAP.read().is_empty());
+    }
+
+    #[test]
+    fn wait() {
+        let h = epoll_create1(0);
+        assert_ne!(h, 0);
+        let mut event = Event::none(0);
+        let res = unsafe { epoll_wait(h, &mut event, 1, 100) };
+        assert_eq!(res, 0);
+        let res = epoll_close(h);
+        assert_eq!(res, 0);
     }
 }
