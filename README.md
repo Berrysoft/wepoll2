@@ -1,6 +1,8 @@
 # wepoll2
 
-This is a Rust crate inspired by the famous `wepoll` library. It provides similar FFI, but not ABI-compatible.
+This is a Rust crate inspired by the famous [`wepoll`](https://github.com/piscisaureus/wepoll) library. It provides similar FFI, but not ABI-compatible.
+
+Previously I tried to [add `ProcessSocketNotifications` backend](https://github.com/smol-rs/polling/pull/210) for [`polling`](https://github.com/smol-rs/polling), but it doesn't fit that crate well.
 
 ## Implementation details
 
@@ -23,5 +25,5 @@ Unlike `wepoll`, [`ProcessSocketNotifications`](https://learn.microsoft.com/en-u
 
 ## Bugs
 
-* Cannot fully work on i686 target. Still investigating.
+* Sockets don't work on i686 target. Still investigating.
 * `epoll_wait` series API may wait for a shorter time than specified. Maybe bugs of Windows API.
