@@ -1,8 +1,8 @@
 #ifndef WEPOLL_H_
 #define WEPOLL_H_
 
-#include <stdint.h>
 #include <stdbool.h>
+#include <stdint.h>
 #include <time.h>
 
 /* clang-format off */
@@ -36,7 +36,7 @@ typedef union epoll_data {
   void* ptr;
   int fd;
   uint32_t u32;
-#if UINTPTR_MAX == UINT64_MAX
+#if UINTPTR_MAX == UINT64_MAX /* IOCP key is the pointer size. */
   uint64_t u64;
 #endif
   SOCKET sock; /* Windows specific */
@@ -47,7 +47,7 @@ struct epoll_event {
   epoll_data_t data; /* User data variable */
   void* __overlapped;
   size_t __internal;
-  uint32_t events;   /* Epoll events and flags */
+  uint32_t events; /* Epoll events and flags */
 };
 
 #ifdef __cplusplus
@@ -59,10 +59,7 @@ HANDLE epoll_create1(int flags);
 
 int epoll_close(HANDLE ephnd);
 
-int epoll_ctl(HANDLE ephnd,
-              int op,
-              HANDLE handle,
-              struct epoll_event* event);
+int epoll_ctl(HANDLE ephnd, int op, HANDLE handle, struct epoll_event* event);
 
 int epoll_wait(HANDLE ephnd,
                struct epoll_event* events,
