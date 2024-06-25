@@ -6,8 +6,7 @@ Previously I tried to [add `ProcessSocketNotifications` backend](https://github.
 
 ## Implementation details
 
-This library is implemented in Rust, which may panic in some rare cases. It is still on the plan to reduce the panics.
-The crate is `no-std` and `panic-abort` by default to reduce the binary size.
+The crate is `no-std` by default to reduce the binary size. All APIs are panic-free.
 
 Unlike `wepoll`, [`ProcessSocketNotifications`](https://learn.microsoft.com/en-us/windows/win32/api/winsock2/nf-winsock2-processsocketnotifications) is used in this library. It behaves a little different from `epoll` in Linux.
 
