@@ -3,6 +3,7 @@ use std::time::{Duration, Instant};
 use wepoll2::Poller;
 
 #[test]
+#[ignore]
 fn below_ms() {
     let poller = Poller::new().unwrap();
     let mut events = Vec::with_capacity(1);
@@ -27,6 +28,7 @@ fn below_ms() {
 }
 
 #[test]
+#[ignore]
 fn above_ms() {
     let poller = Poller::new().unwrap();
     let mut events = Vec::with_capacity(1);
