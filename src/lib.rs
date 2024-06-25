@@ -15,7 +15,7 @@
 //! of thread pool APIs like `RegisterWaitForSingleObject`. We use it to avoid
 //! starting thread pools. It only supports `Oneshot` mode.
 
-#![feature(try_blocks)]
+#![feature(try_blocks, build_hasher_default_const_new)]
 #![warn(missing_docs)]
 #![cfg_attr(not(feature = "std"), no_std)]
 
@@ -26,17 +26,17 @@ mod io;
 mod lock;
 mod wait;
 
-use alloc::collections::BTreeMap;
 use core::{mem::MaybeUninit, ptr::null_mut, time::Duration};
 
+use hashbrown::{HashMap, TryReserveError};
 use io::OwnedHandle;
 pub use io::{Error, Result};
 use wait::WaitCompletionPacket;
 use windows_sys::Win32::{
     Foundation::{
-        RtlNtStatusToDosError, BOOLEAN, ERROR_ALREADY_EXISTS, ERROR_NOT_FOUND, ERROR_SUCCESS,
-        HANDLE, INVALID_HANDLE_VALUE, NTSTATUS, STATUS_SUCCESS, STATUS_TIMEOUT, STATUS_USER_APC,
-        WAIT_TIMEOUT,
+        RtlNtStatusToDosError, BOOLEAN, ERROR_ALREADY_EXISTS, ERROR_NOT_ENOUGH_MEMORY,
+        ERROR_NOT_ENOUGH_QUOTA, ERROR_NOT_FOUND, ERROR_SUCCESS, HANDLE, INVALID_HANDLE_VALUE,
+        NTSTATUS, STATUS_SUCCESS, STATUS_TIMEOUT, STATUS_USER_APC, WAIT_TIMEOUT,
     },
     Networking::WinSock::{
         ProcessSocketNotifications, SOCKET, SOCK_NOTIFY_EVENT_ERR, SOCK_NOTIFY_EVENT_HANGUP,
@@ -100,10 +100,10 @@ pub struct Poller {
     /// The state of the sources registered with this poller.
     ///
     /// Each source is keyed by its raw socket ID.
-    sources: BTreeMap<SOCKET, usize>,
+    sources: HashMap<SOCKET, usize>,
 
     /// The state of the waitable handles registered with this poller.
-    waitables: BTreeMap<HANDLE, WaitableAttr>,
+    waitables: HashMap<HANDLE, WaitableAttr>,
 }
 
 /// A waitable object with key and [`WaitCompletionPacket`].
@@ -126,8 +126,8 @@ impl Poller {
         let port = unsafe { OwnedHandle::from_raw_handle(handle) };
         Ok(Poller {
             port,
-            sources: BTreeMap::new(),
-            waitables: BTreeMap::new(),
+            sources: HashMap::new(),
+            waitables: HashMap::new(),
         })
     }
 
@@ -136,7 +136,8 @@ impl Poller {
         if self.sources.contains_key(&socket) {
             return Err(Error(ERROR_ALREADY_EXISTS));
         }
-        self.sources.insert(socket, interest.key());
+        self.sources.try_reserve(1).map_err(map_try_reserve_error)?;
+        self.sources.insert_unique_unchecked(socket, interest.key());
 
         let info = create_registration(socket, interest, mode, true);
         self.update_source(info)
@@ -176,7 +177,11 @@ impl Poller {
             key,
             interest_to_events(&interest) as _,
         )?;
-        self.waitables.insert(handle, WaitableAttr { key, packet });
+        self.waitables
+            .try_reserve(1)
+            .map_err(map_try_reserve_error)?;
+        self.waitables
+            .insert_unique_unchecked(handle, WaitableAttr { key, packet });
         Ok(())
     }
 
@@ -488,7 +493,7 @@ impl Event {
     }
 }
 
-pub(crate) fn interest_to_filter(interest: &Event) -> u16 {
+fn interest_to_filter(interest: &Event) -> u16 {
     let mut filter = SOCK_NOTIFY_REGISTER_EVENT_NONE;
     if interest.is_readable() {
         filter |= SOCK_NOTIFY_REGISTER_EVENT_IN;
@@ -502,7 +507,7 @@ pub(crate) fn interest_to_filter(interest: &Event) -> u16 {
     filter as _
 }
 
-pub(crate) fn interest_to_events(interest: &Event) -> u32 {
+fn interest_to_events(interest: &Event) -> u32 {
     let mut events = 0;
     if interest.is_readable() {
         events |= SOCK_NOTIFY_EVENT_IN;
@@ -519,7 +524,7 @@ pub(crate) fn interest_to_events(interest: &Event) -> u32 {
     events
 }
 
-pub(crate) fn mode_to_flags(mode: PollMode) -> u8 {
+fn mode_to_flags(mode: PollMode) -> u8 {
     let flags = match mode {
         PollMode::Oneshot => SOCK_NOTIFY_TRIGGER_ONESHOT | SOCK_NOTIFY_TRIGGER_LEVEL,
         PollMode::Level => SOCK_NOTIFY_TRIGGER_PERSISTENT | SOCK_NOTIFY_TRIGGER_LEVEL,
@@ -529,7 +534,7 @@ pub(crate) fn mode_to_flags(mode: PollMode) -> u8 {
     flags as u8
 }
 
-pub(crate) fn create_registration(
+fn create_registration(
     socket: SOCKET,
     interest: Event,
     mode: PollMode,
@@ -551,5 +556,12 @@ pub(crate) fn create_registration(
         },
         triggerFlags: mode_to_flags(mode),
         registrationResult: 0,
+    }
+}
+
+fn map_try_reserve_error(e: TryReserveError) -> Error {
+    match e {
+        TryReserveError::AllocError { .. } => Error(ERROR_NOT_ENOUGH_MEMORY),
+        TryReserveError::CapacityOverflow => Error(ERROR_NOT_ENOUGH_QUOTA),
     }
 }

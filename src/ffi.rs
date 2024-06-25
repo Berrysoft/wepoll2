@@ -1,12 +1,12 @@
 //! FFI of this crate. Imitate epoll(2).
 
-use alloc::collections::BTreeMap;
 use core::{
     ffi::c_int,
     ptr::{null, null_mut},
     time::Duration,
 };
 
+use hashbrown::{hash_map::DefaultHashBuilder, HashMap};
 use windows_sys::Win32::{
     Foundation::{SetLastError, ERROR_INVALID_PARAMETER, HANDLE},
     Networking::WinSock::{WSAGetLastError, WSAGetQOSByName, SOCKET, WSAENOTSOCK},
@@ -64,14 +64,16 @@ pub const EPOLL_CTL_MOD: c_int = 2;
 /// Delete an entry.
 pub const EPOLL_CTL_DEL: c_int = 3;
 
-static POLLER_MAP: RwLock<BTreeMap<HANDLE, Poller>> = RwLock::new(BTreeMap::new());
+static POLLER_MAP: RwLock<HashMap<HANDLE, Poller>> =
+    RwLock::new(HashMap::with_hasher(DefaultHashBuilder::new()));
 
 #[inline(never)]
 fn epoll_try_create() -> Result<HANDLE> {
     let poller = Poller::new()?;
     let handle = poller.port.as_raw_handle();
     let mut map = POLLER_MAP.write();
-    map.insert(handle, poller);
+    map.try_reserve(1).map_err(crate::map_try_reserve_error)?;
+    map.insert_unique_unchecked(handle, poller);
     Ok(handle)
 }
 
