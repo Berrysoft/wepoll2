@@ -6,13 +6,12 @@ use core::{
     time::Duration,
 };
 
-use hashbrown::{hash_map::DefaultHashBuilder, HashMap};
 use windows_sys::Win32::{
     Foundation::{SetLastError, ERROR_INVALID_PARAMETER, HANDLE},
     Networking::WinSock::{WSAGetLastError, WSAGetQOSByName, SOCKET, WSAENOTSOCK},
 };
 
-use crate::{lock::RwLock, Error, Event, PollMode, Poller, Result};
+use crate::{lock::RwLock, map::HashMap, Error, Event, PollMode, Poller, Result};
 
 #[inline]
 fn io_result_ok<T>(res: Result<T>) -> Option<T> {
@@ -64,16 +63,15 @@ pub const EPOLL_CTL_MOD: c_int = 2;
 /// Delete an entry.
 pub const EPOLL_CTL_DEL: c_int = 3;
 
-static POLLER_MAP: RwLock<HashMap<HANDLE, Poller>> =
-    RwLock::new(HashMap::with_hasher(DefaultHashBuilder::new()));
+static POLLER_MAP: RwLock<HashMap<HANDLE, Poller>> = RwLock::new(HashMap::new());
 
 #[inline(never)]
 fn epoll_try_create() -> Result<HANDLE> {
     let poller = Poller::new()?;
     let handle = poller.port.as_raw_handle();
     let mut map = POLLER_MAP.write();
-    map.try_reserve(1).map_err(crate::map_try_reserve_error)?;
-    map.insert_unique_unchecked(handle, poller);
+    map.try_insert(handle, poller)
+        .map_err(crate::map_try_reserve_error)?;
     Ok(handle)
 }
 

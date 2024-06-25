@@ -8,7 +8,7 @@ crate-type = ["rlib", "cdylib", "staticlib"]
 
 [dependencies]
 errno = { version = "0.3.9", default-features = false }
-hashbrown = { version = "0.14.5", features = ["nightly"] }
+hashbrown = { version = "0.14.5", features = ["nightly", "raw"] }
 libc = { version = "0.2.155", default-features = false }
 lock_api = { version = "0.4.12", features = ["nightly"] }
 windows-sys = { version = "0.52.0", features = [

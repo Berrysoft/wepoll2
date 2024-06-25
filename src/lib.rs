@@ -15,7 +15,7 @@
 //! of thread pool APIs like `RegisterWaitForSingleObject`. We use it to avoid
 //! starting thread pools. It only supports `Oneshot` mode.
 
-#![feature(try_blocks, build_hasher_default_const_new)]
+#![feature(allocator_api, try_blocks, build_hasher_default_const_new)]
 #![warn(missing_docs)]
 #![cfg_attr(not(feature = "std"), no_std)]
 
@@ -24,13 +24,15 @@ extern crate alloc;
 pub mod ffi;
 mod io;
 mod lock;
+mod map;
 mod wait;
 
 use core::{mem::MaybeUninit, ptr::null_mut, time::Duration};
 
-use hashbrown::{HashMap, TryReserveError};
+use hashbrown::TryReserveError;
 use io::OwnedHandle;
 pub use io::{Error, Result};
+use map::HashMap;
 use wait::WaitCompletionPacket;
 use windows_sys::Win32::{
     Foundation::{
@@ -136,8 +138,9 @@ impl Poller {
         if self.sources.contains_key(&socket) {
             return Err(Error(ERROR_ALREADY_EXISTS));
         }
-        self.sources.try_reserve(1).map_err(map_try_reserve_error)?;
-        self.sources.insert_unique_unchecked(socket, interest.key());
+        self.sources
+            .try_insert(socket, interest.key())
+            .map_err(map_try_reserve_error)?;
 
         let info = create_registration(socket, interest, mode, true);
         self.update_source(info)
@@ -178,10 +181,8 @@ impl Poller {
             interest_to_events(&interest) as _,
         )?;
         self.waitables
-            .try_reserve(1)
+            .try_insert(handle, WaitableAttr { key, packet })
             .map_err(map_try_reserve_error)?;
-        self.waitables
-            .insert_unique_unchecked(handle, WaitableAttr { key, packet });
         Ok(())
     }
 
