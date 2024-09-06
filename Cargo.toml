@@ -1,6 +1,6 @@
 [package]
 name = "wepoll2"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 
 [lib]
@@ -11,7 +11,7 @@ errno = { version = "0.3.9", default-features = false }
 hashbrown = { version = "0.14.5", features = ["nightly", "raw"] }
 libc = { version = "0.2.155", default-features = false }
 lock_api = { version = "0.4.12", features = ["nightly"] }
-windows-sys = { version = "0.52.0", features = [
+windows-sys = { version = "0.59.0", features = [
     "Wdk_Foundation",
     "Win32_Foundation",
     "Win32_Networking_WinSock",
@@ -21,7 +21,7 @@ windows-sys = { version = "0.52.0", features = [
 
 [dev-dependencies]
 socket2 = "0.5.7"
-windows-sys = { version = "0.52.0", features = ["Win32_Security"] }
+windows-sys = { version = "0.59.0", features = ["Win32_Security"] }
 
 [features]
 default = []

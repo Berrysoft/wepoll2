@@ -10,16 +10,14 @@ use windows_sys::Win32::System::Threading::{CreateEventA, SetEvent};
 #[test]
 fn poll_event() {
     let e = unsafe { CreateEventA(null(), 0, 0, null()) };
-    assert_ne!(e, 0);
-    let e = unsafe { OwnedHandle::from_raw_handle(e as _) };
+    assert!(!e.is_null());
+    let e = unsafe { OwnedHandle::from_raw_handle(e) };
 
     let mut poller = Poller::new().unwrap();
     let interest = Event::none(114514).with_readable(true);
-    poller
-        .add_waitable(e.as_raw_handle() as _, interest)
-        .unwrap();
+    poller.add_waitable(e.as_raw_handle(), interest).unwrap();
 
-    let res = unsafe { SetEvent(e.as_raw_handle() as _) };
+    let res = unsafe { SetEvent(e.as_raw_handle()) };
     assert!(res != 0);
 
     let mut entries = [MaybeUninit::uninit(); 8];
@@ -29,5 +27,5 @@ fn poll_event() {
     assert_eq!(event.key(), 114514);
     assert!(event.is_readable());
 
-    poller.delete_waitable(e.as_raw_handle() as _).unwrap();
+    poller.delete_waitable(e.as_raw_handle()).unwrap();
 }

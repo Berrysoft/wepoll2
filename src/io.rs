@@ -24,6 +24,9 @@ impl Drop for OwnedHandle {
     }
 }
 
+unsafe impl Send for OwnedHandle {}
+unsafe impl Sync for OwnedHandle {}
+
 /// Win32 error with error code.
 pub struct Error(pub WIN32_ERROR);
 

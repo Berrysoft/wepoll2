@@ -7,7 +7,7 @@ use core::{
 };
 
 use windows_sys::Win32::{
-    Foundation::{SetLastError, ERROR_INVALID_PARAMETER, HANDLE},
+    Foundation::{SetLastError, ERROR_INVALID_PARAMETER, HANDLE, HANDLE_PTR},
     Networking::WinSock::{WSAGetLastError, WSAGetQOSByName, SOCKET, WSAENOTSOCK},
 };
 
@@ -31,7 +31,7 @@ fn io_result_ret(res: Result<c_int>) -> c_int {
 
 #[inline]
 fn io_result_ret_handle(res: Result<HANDLE>) -> HANDLE {
-    io_result_ok(res).unwrap_or(0)
+    io_result_ok(res).unwrap_or(null_mut())
 }
 
 #[inline]
@@ -63,14 +63,14 @@ pub const EPOLL_CTL_MOD: c_int = 2;
 /// Delete an entry.
 pub const EPOLL_CTL_DEL: c_int = 3;
 
-static POLLER_MAP: RwLock<HashMap<HANDLE, Poller>> = RwLock::new(HashMap::new());
+static POLLER_MAP: RwLock<HashMap<HANDLE_PTR, Poller>> = RwLock::new(HashMap::new());
 
 #[inline(never)]
 fn epoll_try_create() -> Result<HANDLE> {
     let poller = Poller::new()?;
     let handle = poller.port.as_raw_handle();
     let mut map = POLLER_MAP.write();
-    map.try_insert(handle, poller)
+    map.try_insert(handle as HANDLE_PTR, poller)
         .map_err(crate::map_try_reserve_error)?;
     Ok(handle)
 }
@@ -102,7 +102,7 @@ pub extern "C" fn epoll_create1(flags: c_int) -> HANDLE {
 #[no_mangle]
 pub extern "C" fn epoll_close(poller: HANDLE) -> c_int {
     io_result_ret({
-        if let Some(poller) = POLLER_MAP.write().remove(&poller) {
+        if let Some(poller) = POLLER_MAP.write().remove(&(poller as HANDLE_PTR)) {
             drop(poller);
             Ok(0)
         } else {
@@ -122,7 +122,9 @@ unsafe fn epoll_wait_duration(
     io_result_ret(
         try {
             let map = POLLER_MAP.read();
-            let poller = map.get(&poller).ok_or(Error(ERROR_INVALID_PARAMETER))?;
+            let poller = map
+                .get(&(poller as HANDLE_PTR))
+                .ok_or(Error(ERROR_INVALID_PARAMETER))?;
             let len = len as usize;
             let events = if len != 0 {
                 check_pointer(events)?;
@@ -273,7 +275,9 @@ pub unsafe extern "C" fn epoll_ctl(
     io_result_ret(
         try {
             let mut map = POLLER_MAP.write();
-            let poller = map.get_mut(&poller).ok_or(Error(ERROR_INVALID_PARAMETER))?;
+            let poller = map
+                .get_mut(&(poller as HANDLE_PTR))
+                .ok_or(Error(ERROR_INVALID_PARAMETER))?;
             if is_socket(handle) {
                 epoll_ctl_socket(poller, op, handle as _, event)?;
             } else {
@@ -303,18 +307,18 @@ mod test {
         assert!(is_socket(s.as_raw_socket() as _));
 
         let f = File::open("Cargo.toml").unwrap();
-        assert!(!is_socket(f.as_raw_handle() as _));
+        assert!(!is_socket(f.as_raw_handle()));
 
         let e = unsafe { CreateEventA(null(), 0, 0, null()) };
-        assert_ne!(e, 0);
-        let e = unsafe { OwnedHandle::from_raw_handle(e as _) };
-        assert!(!is_socket(e.as_raw_handle() as _));
+        assert!(!e.is_null());
+        let e = unsafe { OwnedHandle::from_raw_handle(e) };
+        assert!(!is_socket(e.as_raw_handle()));
     }
 
     #[test]
     fn create() {
         let h = epoll_create1(0);
-        assert_ne!(h, 0);
+        assert!(!h.is_null());
         assert!(!POLLER_MAP.read().is_empty());
         let res = epoll_close(h);
         assert_eq!(res, 0);
@@ -324,7 +328,7 @@ mod test {
     #[test]
     fn wait() {
         let h = epoll_create1(0);
-        assert_ne!(h, 0);
+        assert!(!h.is_null());
         let mut event = Event::none(0);
         let res = unsafe { epoll_wait(h, &mut event, 1, 100) };
         assert_eq!(res, 0);

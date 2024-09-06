@@ -108,6 +108,9 @@ pub struct Poller {
     waitables: HashMap<HANDLE, WaitableAttr>,
 }
 
+unsafe impl Send for Poller {}
+unsafe impl Sync for Poller {}
+
 /// A waitable object with key and [`WaitCompletionPacket`].
 ///
 /// [`WaitCompletionPacket`]: wait::WaitCompletionPacket
@@ -120,8 +123,8 @@ struct WaitableAttr {
 impl Poller {
     /// Creates a new poller.
     pub fn new() -> Result<Self> {
-        let handle = unsafe { CreateIoCompletionPort(INVALID_HANDLE_VALUE, 0, 0, 0) };
-        if handle == 0 {
+        let handle = unsafe { CreateIoCompletionPort(INVALID_HANDLE_VALUE, null_mut(), 0, 0) };
+        if handle.is_null() {
             return Err(Error::last_os_error());
         }
 

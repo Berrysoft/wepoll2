@@ -53,7 +53,7 @@ fn check_status(status: NTSTATUS) -> Result<()> {
 
 impl WaitCompletionPacket {
     pub fn new() -> Result<Self> {
-        let mut handle = 0;
+        let mut handle = null_mut();
         check_status(unsafe {
             NtCreateWaitCompletionPacket(&mut handle, GENERIC_READ | GENERIC_WRITE, null_mut())
         })?;
