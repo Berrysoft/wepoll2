@@ -64,18 +64,7 @@ unsafe impl GlobalAlloc for LibcAllocator {
     }
 
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        use libc::{c_void, size_t};
-
-        extern "C" {
-            #[link_name = "_aligned_realloc"]
-            pub fn aligned_realloc(
-                ptr: *mut c_void,
-                size: size_t,
-                alignment: size_t,
-            ) -> *mut c_void;
-        }
-
-        aligned_realloc(ptr.cast(), new_size, layout.align()).cast()
+        libc::aligned_realloc(ptr.cast(), new_size, layout.align()).cast()
     }
 }
 

@@ -15,7 +15,7 @@
 //! of thread pool APIs like `RegisterWaitForSingleObject`. We use it to avoid
 //! starting thread pools. It only supports `Oneshot` mode.
 
-#![feature(allocator_api, try_blocks, build_hasher_default_const_new)]
+#![feature(allocator_api, try_blocks)]
 #![warn(missing_docs)]
 #![cfg_attr(not(feature = "std"), no_std)]
 
