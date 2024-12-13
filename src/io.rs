@@ -56,15 +56,15 @@ struct LibcAllocator;
 
 unsafe impl GlobalAlloc for LibcAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        libc::aligned_malloc(layout.size(), layout.align()).cast()
+        unsafe { libc::aligned_malloc(layout.size(), layout.align()).cast() }
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, _layout: Layout) {
-        libc::aligned_free(ptr.cast())
+        unsafe { libc::aligned_free(ptr.cast()) }
     }
 
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        libc::aligned_realloc(ptr.cast(), new_size, layout.align()).cast()
+        unsafe { libc::aligned_realloc(ptr.cast(), new_size, layout.align()).cast() }
     }
 }
 

@@ -3,7 +3,7 @@ use core::cell::UnsafeCell;
 use lock_api::{GuardSend, RawRwLock};
 use windows_sys::Win32::System::Threading::{
     AcquireSRWLockExclusive, AcquireSRWLockShared, ReleaseSRWLockExclusive, ReleaseSRWLockShared,
-    TryAcquireSRWLockExclusive, TryAcquireSRWLockShared, SRWLOCK,
+    SRWLOCK, TryAcquireSRWLockExclusive, TryAcquireSRWLockShared,
 };
 
 pub type RwLock<T> = lock_api::RwLock<SRWLock, T>;

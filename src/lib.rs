@@ -36,21 +36,21 @@ use map::HashMap;
 use wait::WaitCompletionPacket;
 use windows_sys::Win32::{
     Foundation::{
-        RtlNtStatusToDosError, BOOLEAN, ERROR_ALREADY_EXISTS, ERROR_NOT_ENOUGH_MEMORY,
-        ERROR_NOT_ENOUGH_QUOTA, ERROR_NOT_FOUND, ERROR_SUCCESS, HANDLE, INVALID_HANDLE_VALUE,
-        NTSTATUS, STATUS_SUCCESS, STATUS_TIMEOUT, STATUS_USER_APC, WAIT_TIMEOUT,
+        BOOLEAN, ERROR_ALREADY_EXISTS, ERROR_NOT_ENOUGH_MEMORY, ERROR_NOT_ENOUGH_QUOTA,
+        ERROR_NOT_FOUND, ERROR_SUCCESS, HANDLE, INVALID_HANDLE_VALUE, NTSTATUS,
+        RtlNtStatusToDosError, STATUS_SUCCESS, STATUS_TIMEOUT, STATUS_USER_APC, WAIT_TIMEOUT,
     },
     Networking::WinSock::{
-        ProcessSocketNotifications, SOCKET, SOCK_NOTIFY_EVENT_ERR, SOCK_NOTIFY_EVENT_HANGUP,
+        ProcessSocketNotifications, SOCK_NOTIFY_EVENT_ERR, SOCK_NOTIFY_EVENT_HANGUP,
         SOCK_NOTIFY_EVENT_IN, SOCK_NOTIFY_EVENT_OUT, SOCK_NOTIFY_EVENT_REMOVE,
         SOCK_NOTIFY_OP_DISABLE, SOCK_NOTIFY_OP_ENABLE, SOCK_NOTIFY_OP_REMOVE,
         SOCK_NOTIFY_REGISTER_EVENT_HANGUP, SOCK_NOTIFY_REGISTER_EVENT_IN,
         SOCK_NOTIFY_REGISTER_EVENT_NONE, SOCK_NOTIFY_REGISTER_EVENT_OUT, SOCK_NOTIFY_REGISTRATION,
         SOCK_NOTIFY_TRIGGER_EDGE, SOCK_NOTIFY_TRIGGER_LEVEL, SOCK_NOTIFY_TRIGGER_ONESHOT,
-        SOCK_NOTIFY_TRIGGER_PERSISTENT,
+        SOCK_NOTIFY_TRIGGER_PERSISTENT, SOCKET,
     },
     System::IO::{
-        CreateIoCompletionPort, PostQueuedCompletionStatus, OVERLAPPED, OVERLAPPED_ENTRY,
+        CreateIoCompletionPort, OVERLAPPED, OVERLAPPED_ENTRY, PostQueuedCompletionStatus,
     },
 };
 
@@ -341,7 +341,7 @@ impl Poller {
         alertable: bool,
     ) -> Result<usize> {
         #[link(name = "ntdll")]
-        extern "system" {
+        unsafe extern "system" {
             fn NtRemoveIoCompletionEx(
                 handle: HANDLE,
                 information: *mut MaybeUninit<OVERLAPPED_ENTRY>,

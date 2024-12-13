@@ -4,7 +4,7 @@ use core::{
     hash::{BuildHasher, Hash},
 };
 
-use hashbrown::{hash_map::DefaultHashBuilder, raw::RawTable, Equivalent, TryReserveError};
+use hashbrown::{Equivalent, TryReserveError, hash_map::DefaultHashBuilder, raw::RawTable};
 
 pub struct HashMap<K, V> {
     hash_builder: DefaultHashBuilder,

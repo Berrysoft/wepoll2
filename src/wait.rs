@@ -5,7 +5,7 @@ use core::{ffi::c_void, ptr::null_mut};
 use windows_sys::{
     Wdk::Foundation::OBJECT_ATTRIBUTES,
     Win32::Foundation::{
-        RtlNtStatusToDosError, BOOLEAN, GENERIC_READ, GENERIC_WRITE, HANDLE, NTSTATUS,
+        BOOLEAN, GENERIC_READ, GENERIC_WRITE, HANDLE, NTSTATUS, RtlNtStatusToDosError,
         STATUS_CANCELLED, STATUS_PENDING, STATUS_SUCCESS,
     },
 };
@@ -13,7 +13,7 @@ use windows_sys::{
 use crate::{Error, OwnedHandle, Result};
 
 #[link(name = "ntdll")]
-extern "system" {
+unsafe extern "system" {
     fn NtCreateWaitCompletionPacket(
         WaitCompletionPacketHandle: *mut HANDLE,
         DesiredAccess: u32,

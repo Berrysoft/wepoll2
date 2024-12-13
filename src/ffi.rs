@@ -7,11 +7,11 @@ use core::{
 };
 
 use windows_sys::Win32::{
-    Foundation::{SetLastError, ERROR_INVALID_PARAMETER, HANDLE, HANDLE_PTR},
-    Networking::WinSock::{WSAGetLastError, WSAGetQOSByName, SOCKET, WSAENOTSOCK},
+    Foundation::{ERROR_INVALID_PARAMETER, HANDLE, HANDLE_PTR, SetLastError},
+    Networking::WinSock::{SOCKET, WSAENOTSOCK, WSAGetLastError, WSAGetQOSByName},
 };
 
-use crate::{lock::RwLock, map::HashMap, Error, Event, PollMode, Poller, Result};
+use crate::{Error, Event, PollMode, Poller, Result, lock::RwLock, map::HashMap};
 
 #[inline]
 fn io_result_ok<T>(res: Result<T>) -> Option<T> {
@@ -76,7 +76,7 @@ fn epoll_try_create() -> Result<HANDLE> {
 }
 
 /// Create a new wepoll instance. `size` should be positive.
-#[no_mangle]
+#[unsafe(no_mangle)]
 #[deprecated]
 pub extern "C" fn epoll_create(size: c_int) -> HANDLE {
     io_result_ret_handle(if size <= 0 {
@@ -87,7 +87,7 @@ pub extern "C" fn epoll_create(size: c_int) -> HANDLE {
 }
 
 /// Create a new wepoll instance. `flags` should be zero.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn epoll_create1(flags: c_int) -> HANDLE {
     io_result_ret_handle({
         if flags != 0 {
@@ -99,7 +99,7 @@ pub extern "C" fn epoll_create1(flags: c_int) -> HANDLE {
 }
 
 /// Close a wepoll instance.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn epoll_close(poller: HANDLE) -> c_int {
     io_result_ret({
         if let Some(poller) = POLLER_MAP.write().remove(&(poller as HANDLE_PTR)) {
@@ -145,14 +145,14 @@ unsafe fn epoll_wait_duration(
 /// # Safety
 ///
 /// Given pointer should be valid.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn epoll_wait(
     poller: HANDLE,
     events: *mut Event,
     len: c_int,
     timeout: c_int,
 ) -> c_int {
-    epoll_pwait(poller, events, len, timeout, false)
+    unsafe { epoll_pwait(poller, events, len, timeout, false) }
 }
 
 /// Wait for events on the wepoll instance.
@@ -162,7 +162,7 @@ pub unsafe extern "C" fn epoll_wait(
 /// # Safety
 ///
 /// Given pointer should be valid.
-#[no_mangle]
+#[unsafe(no_mangle)]
 #[inline(never)]
 pub unsafe extern "C" fn epoll_pwait(
     poller: HANDLE,
@@ -176,7 +176,7 @@ pub unsafe extern "C" fn epoll_pwait(
     } else {
         Some(Duration::from_millis(timeout as _))
     };
-    epoll_wait_duration(poller, events, len, timeout, alertable)
+    unsafe { epoll_wait_duration(poller, events, len, timeout, alertable) }
 }
 
 /// Wait for events on the wepoll instance.
@@ -186,7 +186,7 @@ pub unsafe extern "C" fn epoll_pwait(
 /// # Safety
 ///
 /// Given pointer should be valid.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn epoll_pwait2(
     poller: HANDLE,
     events: *mut Event,
@@ -195,12 +195,12 @@ pub unsafe extern "C" fn epoll_pwait2(
     alertable: bool,
 ) -> c_int {
     if timeout.is_null() {
-        epoll_wait_duration(poller, events, len, None, alertable)
+        unsafe { epoll_wait_duration(poller, events, len, None, alertable) }
     } else if timeout.is_aligned() {
         let timeout = unsafe { &*timeout };
         let timeout = Duration::from_nanos(timeout.tv_nsec as _)
             .checked_add(Duration::from_secs(timeout.tv_sec as _));
-        epoll_wait_duration(poller, events, len, timeout, alertable)
+        unsafe { epoll_wait_duration(poller, events, len, timeout, alertable) }
     } else {
         unsafe { SetLastError(ERROR_INVALID_PARAMETER) };
         -1
@@ -265,7 +265,7 @@ fn epoll_ctl_waitable(
 /// # Safety
 ///
 /// Given pointer should be valid.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn epoll_ctl(
     poller: HANDLE,
     op: c_int,
